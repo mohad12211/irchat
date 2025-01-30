@@ -92,6 +92,10 @@ static void *ircThread(void *) {
       send(sd, buf, n, 0);
       printf("sent: %s\n", buf);
     }
+    if (strstr(buf, "GLOBALUSERSTATE")) {
+      char *joinChannel = "JOIN #mohad12211\r\n";
+      send(sd, joinChannel, strlen(joinChannel), 0);
+    }
   }
 
   return NULL;
