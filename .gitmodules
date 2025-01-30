@@ -1,0 +1,4 @@
+[submodule "external/libui-ng"]
+	path = external/libui-ng
+	url = https://github.com/libui-ng/libui-ng.git
+  ignore = dirty
