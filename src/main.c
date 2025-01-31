@@ -21,6 +21,9 @@
 
 uiWindow *w;
 uiMultilineEntry *e;
+uiEntry *entry;
+uiButton *b;
+int sd;
 
 static int onClosing(uiWindow *, void *) {
   uiQuit();
@@ -32,6 +35,7 @@ char buffer[1024] = {0};
 static void runOnMainThread(void *arg) {
   char *text = (char *)arg;
   uiMultilineEntryAppend(e, text);
+  free(text);
 }
 
 static void *ircThread(void *) {
@@ -47,7 +51,7 @@ static void *ircThread(void *) {
     exit(1);
   }
 
-  int sd = 0;
+  sd = 0;
   for (struct addrinfo *addr = addrs; addr != NULL; addr = addr->ai_next) {
     sd = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
 
@@ -101,6 +105,15 @@ static void *ircThread(void *) {
   return NULL;
 }
 
+static void onSendClicked(uiButton *, void *) {
+  const char *text = uiEntryText(entry);
+  char message[1024];
+  sprintf(message, "PRIVMSG #mohad12211 :%s\r\n", text);
+  uiQueueMain(runOnMainThread, strdup(message));
+  send(sd, message, strlen(message), 0);
+  uiEntrySetText(entry, "");
+}
+
 int main(void) {
   uiInitOptions o = {0};
   const char *err;
@@ -118,8 +131,18 @@ int main(void) {
   e = uiNewMultilineEntry();
   uiMultilineEntrySetReadOnly(e, true);
 
+  entry = uiNewEntry();
+  b = uiNewButton("Send");
+
+  uiButtonOnClicked(b, onSendClicked, NULL);
+
+  uiBox *hbox = uiNewHorizontalBox();
+  uiBoxAppend(hbox, uiControl(entry), true);
+  uiBoxAppend(hbox, uiControl(b), false);
+
   uiBox *box = uiNewVerticalBox();
   uiBoxAppend(box, uiControl(e), true);
+  uiBoxAppend(box, uiControl(hbox), false);
   uiWindowSetChild(w, uiControl(box));
 
   uiControlShow(uiControl(w));
