@@ -25,12 +25,23 @@ uiEntry *entry;
 uiButton *b;
 int sd;
 
+// :<user>!<user>@<user>.tmi.twitch.tv PRIVMSG #<channel> :<message>\r\n
+static void parse_twitch_message(const char *input, char *username, char *message) {
+  const char *username_start = input + 1;
+  const char *username_end = strchr(username_start, '!');
+  size_t username_length = username_end - username_start;
+  strncpy(username, username_start, username_length);
+  username[username_length] = '\0';
+  char *message_start = strchr(strstr(input, "PRIVMSG"), ':') + 1;
+  // remove \r\n
+  message_start[strlen(message_start) - 2] = '\0';
+  strcpy(message, message_start);
+}
+
 static int onClosing(uiWindow *, void *) {
   uiQuit();
   return 1;
 }
-
-char buffer[1024] = {0};
 
 static void runOnMainThread(void *arg) {
   char *text = (char *)arg;
@@ -39,7 +50,6 @@ static void runOnMainThread(void *arg) {
 }
 
 static void *ircThread(void *) {
-  // create tcp socket and connect to server
   struct addrinfo hints = {0};
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
@@ -90,7 +100,6 @@ static void *ircThread(void *) {
       break;
     }
     buf[n] = '\0';
-    uiQueueMain(runOnMainThread, strdup(buf));
     if (strstr(buf, "PING") == buf) {
       buf[1] = 'O';
       send(sd, buf, n, 0);
@@ -99,6 +108,14 @@ static void *ircThread(void *) {
     if (strstr(buf, "GLOBALUSERSTATE")) {
       char *joinChannel = "JOIN #mohad12211\r\n";
       send(sd, joinChannel, strlen(joinChannel), 0);
+    }
+    if (strstr(buf, "PRIVMSG")) {
+      char username[1024];
+      char message[1024];
+      parse_twitch_message(buf, username, message);
+      char formattedMessage[1024];
+      sprintf(formattedMessage, "%s: %s\n", username, message);
+      uiQueueMain(runOnMainThread, strdup(formattedMessage));
     }
   }
 
@@ -109,8 +126,10 @@ static void onSendClicked(uiButton *, void *) {
   const char *text = uiEntryText(entry);
   char message[1024];
   sprintf(message, "PRIVMSG #mohad12211 :%s\r\n", text);
-  uiQueueMain(runOnMainThread, strdup(message));
   send(sd, message, strlen(message), 0);
+  char formattedMessage[1024];
+  sprintf(formattedMessage, "mohad12211: %s\n", text);
+  uiQueueMain(runOnMainThread, strdup(formattedMessage));
   uiEntrySetText(entry, "");
 }
 
