@@ -18,14 +18,126 @@
 
 #define HOST "irc.chat.twitch.tv"
 #define PORT "6667"
+#define MAX_MESSAGES 100
+
+typedef struct {
+  char username[64];
+  char message[512];
+} ChatMessage;
+
+typedef struct {
+  ChatMessage messages[MAX_MESSAGES];
+  int messageCount;
+  uiAttributedString *displayText;
+  pthread_mutex_t mutex;
+} ChatState;
 
 uiWindow *w;
-uiMultilineEntry *e;
+uiArea *chatArea;
+uiAreaHandler handler;
 uiEntry *entry;
 uiButton *b;
 int sd;
+ChatState chatState;
 
-// :<user>!<user>@<user>.tmi.twitch.tv PRIVMSG #<channel> :<message>\r\n
+static int onClosing(uiWindow *, void *) {
+  uiQuit();
+  return 1;
+}
+
+static void updateDisplayText(void) {
+  pthread_mutex_lock(&chatState.mutex);
+
+  if (chatState.displayText != NULL) {
+    uiFreeAttributedString(chatState.displayText);
+  }
+
+  chatState.displayText = uiNewAttributedString("");
+
+  for (int i = 0; i < chatState.messageCount; i++) {
+    // Add username in bold blue
+    uiAttribute *boldAttr = uiNewWeightAttribute(uiTextWeightBold);
+    uiAttribute *usernameColor = uiNewColorAttribute(0.2, 0.4, 0.8, 1.0);
+
+    size_t start = uiAttributedStringLen(chatState.displayText);
+    size_t end;
+
+    char userPrefix[128];
+    snprintf(userPrefix, sizeof(userPrefix), "%s: ", chatState.messages[i].username);
+    uiAttributedStringAppendUnattributed(chatState.displayText, userPrefix);
+
+    end = uiAttributedStringLen(chatState.displayText);
+    uiAttributedStringSetAttribute(chatState.displayText, boldAttr, start, end);
+    uiAttributedStringSetAttribute(chatState.displayText, usernameColor, start, end);
+
+    // Add message in white
+    start = uiAttributedStringLen(chatState.displayText);
+    uiAttributedStringAppendUnattributed(chatState.displayText, chatState.messages[i].message);
+    end = uiAttributedStringLen(chatState.displayText);
+
+    uiAttribute *messageColor = uiNewColorAttribute(1.0, 1.0, 1.0, 1.0); // White color
+    uiAttributedStringSetAttribute(chatState.displayText, messageColor, start, end);
+
+    uiAttributedStringAppendUnattributed(chatState.displayText, "\n");
+  }
+
+  pthread_mutex_unlock(&chatState.mutex);
+}
+
+static void addChatMessage(const char *username, const char *message) {
+  pthread_mutex_lock(&chatState.mutex);
+
+  if (chatState.messageCount >= MAX_MESSAGES) {
+    memmove(&chatState.messages[0], &chatState.messages[1], sizeof(ChatMessage) * (MAX_MESSAGES - 1));
+    chatState.messageCount--;
+  }
+
+  strncpy(chatState.messages[chatState.messageCount].username, username, 63);
+  strncpy(chatState.messages[chatState.messageCount].message, message, 511);
+  chatState.messages[chatState.messageCount].username[63] = '\0';
+  chatState.messages[chatState.messageCount].message[511] = '\0';
+
+  chatState.messageCount++;
+
+  pthread_mutex_unlock(&chatState.mutex);
+
+  updateDisplayText();
+}
+
+static void handlerDraw(uiAreaHandler *, uiArea *, uiAreaDrawParams *p) {
+  uiDrawTextLayout *textLayout;
+  uiFontDescriptor font;
+  uiDrawTextLayoutParams params;
+
+  pthread_mutex_lock(&chatState.mutex);
+
+  if (chatState.displayText == NULL) {
+    pthread_mutex_unlock(&chatState.mutex);
+    return;
+  }
+
+  uiLoadControlFont(&font);
+  font.Size = 16;
+
+  params.String = chatState.displayText;
+  params.DefaultFont = &font;
+  params.Width = p->AreaWidth;
+  params.Align = uiDrawTextAlignLeft;
+
+  textLayout = uiDrawNewTextLayout(&params);
+  uiDrawText(p->Context, textLayout, 0, 0);
+
+  uiDrawFreeTextLayout(textLayout);
+  uiFreeFontButtonFont(&font);
+
+  pthread_mutex_unlock(&chatState.mutex);
+}
+
+static void handlerMouseEvent(uiAreaHandler *, uiArea *, uiAreaMouseEvent *) {}
+static void handlerMouseCrossed(uiAreaHandler *, uiArea *, int) {}
+static void handlerDragBroken(uiAreaHandler *, uiArea *) {}
+static int handlerKeyEvent(uiAreaHandler *, uiArea *, uiAreaKeyEvent *) { return 0; }
+
 static void parse_twitch_message(const char *input, char *username, char *message) {
   const char *username_start = input + 1;
   const char *username_end = strchr(username_start, '!');
@@ -38,16 +150,7 @@ static void parse_twitch_message(const char *input, char *username, char *messag
   strcpy(message, message_start);
 }
 
-static int onClosing(uiWindow *, void *) {
-  uiQuit();
-  return 1;
-}
-
-static void runOnMainThread(void *arg) {
-  char *text = (char *)arg;
-  uiMultilineEntryAppend(e, text);
-  free(text);
-}
+static void redrawChat(void *) { uiAreaQueueRedrawAll(chatArea); }
 
 static void *ircThread(void *) {
   struct addrinfo hints = {0};
@@ -113,9 +216,8 @@ static void *ircThread(void *) {
       char username[1024];
       char message[1024];
       parse_twitch_message(buf, username, message);
-      char formattedMessage[1024];
-      sprintf(formattedMessage, "%s: %s\n", username, message);
-      uiQueueMain(runOnMainThread, strdup(formattedMessage));
+      addChatMessage(username, message);
+      uiQueueMain(redrawChat, NULL);
     }
   }
 
@@ -127,43 +229,50 @@ static void onSendClicked(uiButton *, void *) {
   char message[1024];
   sprintf(message, "PRIVMSG #mohad12211 :%s\r\n", text);
   send(sd, message, strlen(message), 0);
-  char formattedMessage[1024];
-  sprintf(formattedMessage, "mohad12211: %s\n", text);
-  uiQueueMain(runOnMainThread, strdup(formattedMessage));
+  addChatMessage("mohad12211", text);
+  uiQueueMain(redrawChat, NULL);
   uiEntrySetText(entry, "");
 }
 
 int main(void) {
   uiInitOptions o = {0};
-  const char *err;
-
-  err = uiInit(&o);
+  const char *err = uiInit(&o);
   if (err != NULL) {
     fprintf(stderr, "Error initializing libui-ng: %s\n", err);
     uiFreeInitError(err);
     return 1;
   }
 
+  // Initialize chat state
+  memset(&chatState, 0, sizeof(ChatState));
+  pthread_mutex_init(&chatState.mutex, NULL);
+
+  // Setup handler
+  handler.Draw = handlerDraw;
+  handler.MouseEvent = handlerMouseEvent;
+  handler.MouseCrossed = handlerMouseCrossed;
+  handler.DragBroken = handlerDragBroken;
+  handler.KeyEvent = handlerKeyEvent;
+
   w = uiNewWindow("IrChat", 1600, 900, 0);
   uiWindowOnClosing(w, onClosing, NULL);
+  uiWindowSetMargined(w, 1);
 
-  e = uiNewMultilineEntry();
-  uiMultilineEntrySetReadOnly(e, true);
-
+  chatArea = uiNewArea(&handler);
   entry = uiNewEntry();
   b = uiNewButton("Send");
 
   uiButtonOnClicked(b, onSendClicked, NULL);
 
   uiBox *hbox = uiNewHorizontalBox();
-  uiBoxAppend(hbox, uiControl(entry), true);
-  uiBoxAppend(hbox, uiControl(b), false);
+  uiBoxAppend(hbox, uiControl(entry), 1);
+  uiBoxAppend(hbox, uiControl(b), 0);
 
-  uiBox *box = uiNewVerticalBox();
-  uiBoxAppend(box, uiControl(e), true);
-  uiBoxAppend(box, uiControl(hbox), false);
-  uiWindowSetChild(w, uiControl(box));
+  uiBox *vbox = uiNewVerticalBox();
+  uiBoxAppend(vbox, uiControl(chatArea), 1);
+  uiBoxAppend(vbox, uiControl(hbox), 0);
 
+  uiWindowSetChild(w, uiControl(vbox));
   uiControlShow(uiControl(w));
 
   pthread_t thread;
@@ -171,7 +280,12 @@ int main(void) {
   pthread_detach(thread);
 
   uiMain();
-  uiUninit();
 
+  pthread_mutex_destroy(&chatState.mutex);
+  if (chatState.displayText != NULL) {
+    uiFreeAttributedString(chatState.displayText);
+  }
+
+  uiUninit();
   return 0;
 }
